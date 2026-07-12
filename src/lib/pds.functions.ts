@@ -637,12 +637,15 @@ export const adminSetStock = createServerFn({ method: "POST" })
     const { data: dist } = await supabaseAdmin.from("users").select("id, role").eq("id", data.distributorId).maybeSingle();
     if (!dist || dist.role !== "distributor") throw new Error("Distributor not found");
 
-    const { data: existing } = await supabaseAdmin
-      .from("distributor_stocks")
-      .select("*")
-      .eq("distributor_id", data.distributorId)
-      .eq("item_name", data.itemName)
-      .maybeSingle();
+  const { data: existing, error: selectError } = await supabaseAdmin
+  .from("distributor_stocks")
+  .select("*")
+  .eq("distributor_id", data.distributorId)
+  .eq("item_name", data.itemName)
+  .maybeSingle();
+
+console.log("SELECT ERROR:", selectError);
+console.log("EXISTING:", existing);
 
     if (!existing) {
       const { error } = await supabaseAdmin.from("distributor_stocks").insert({
@@ -661,6 +664,7 @@ export const adminSetStock = createServerFn({ method: "POST" })
         .from("distributor_stocks")
         .update({ assigned_qty: newAssigned, unit: data.unit, updated_at: new Date().toISOString() })
         .eq("id", existing.id);
+        console.log("UPDATE ERROR:", error);
       if (error) throw new Error(error.message);
     }
     return { ok: true };
