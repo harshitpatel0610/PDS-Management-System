@@ -19,7 +19,7 @@ const pendingPrefix = (phone: string) => `__pending:${phone}`;
 
 // ============ REQUEST OTP ============
 export const requestOtp = createServerFn({ method: "POST" })
-  .inputValidator((d: { rationId?: string; phone?: string; portal: Role }) =>
+  .validator((d: { rationId?: string; phone?: string; portal: Role }) =>
     z.object({
       rationId: rationId.optional(),
       phone: phoneSchema.optional(),
@@ -78,7 +78,13 @@ export const requestOtp = createServerFn({ method: "POST" })
       .eq("ration_id", user.ration_id)
       .eq("used", false);
 
-    const code = generateOtp();
+    const isDevBypass =
+  process.env.NODE_ENV === "development" &&
+  process.env.DEV_BYPASS_OTP === "true";
+
+  const code = isDevBypass
+  ? process.env.DEV_OTP!
+  : generateOtp();
 
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
@@ -115,7 +121,7 @@ export const requestOtp = createServerFn({ method: "POST" })
 
 // ============ VERIFY OTP ============
 export const verifyOtp = createServerFn({ method: "POST" })
-  .inputValidator((d: { rationId?: string; phone?: string; portal: Role; code: string }) =>
+  .validator((d: { rationId?: string; phone?: string; portal: Role; code: string }) =>
     z.object({
       rationId: rationId.optional(),
       phone: phoneSchema.optional(),
@@ -125,26 +131,47 @@ export const verifyOtp = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     
+
+    const isDevBypass =
+    process.env.NODE_ENV === "development" &&
+    process.env.DEV_BYPASS_OTP === "true";
+
+
     let q = supabaseAdmin.from("users").select("*");
     if (data.rationId) q = q.eq("ration_id", data.rationId);
     else q = q.eq("phone", data.phone!);
     const { data: user } = await q.maybeSingle();
     if (!user || user.role !== data.portal) throw new Error("Invalid credentials for this portal.");
 
-    const { data: otp } = await supabaseAdmin
-      .from("otps")
-      .select("*")
-      .eq("ration_id", user.ration_id)
-      .eq("code", data.code)
-      .eq("used", false)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+if (!isDevBypass) {
+  const { data: otp } = await supabaseAdmin
+    .from("otps")
+    .select("*")
+    .eq("ration_id", user.ration_id)
+    .eq("code", data.code)
+    .eq("used", false)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-    if (!otp) throw new Error("Invalid OTP");
-    if (new Date(otp.expires_at).getTime() < Date.now()) throw new Error("OTP expired");
+  if (!otp) throw new Error("Invalid OTP");
 
-    await supabaseAdmin.from("otps").update({ used: true }).eq("id", otp.id);
+  if (new Date(otp.expires_at).getTime() < Date.now()) {
+    throw new Error("OTP expired");
+  }
+
+  await supabaseAdmin
+    .from("otps")
+    .update({ used: true })
+    .eq("id", otp.id);
+
+} else {
+  if (data.code !== process.env.DEV_OTP) {
+    throw new Error("Invalid OTP");
+  }
+
+  console.log("⚡ DEV OTP BYPASS SUCCESS");
+}
 
     const token = generateToken();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -155,7 +182,7 @@ export const verifyOtp = createServerFn({ method: "POST" })
 
 // ============ ME ============
 export const me = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { user } = await requireSession(data.token);
     return { user };
@@ -163,7 +190,7 @@ export const me = createServerFn({ method: "POST" })
 
 // ============ LOGOUT ============
 export const logout = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     await supabaseAdmin.from("sessions").delete().eq("token", data.token);
     return { ok: true };
@@ -171,7 +198,7 @@ export const logout = createServerFn({ method: "POST" })
 
 // ============ ADMIN: Create Distributor / Customer ID ============
 export const adminCreateId = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; rationId: string; role: "distributor" | "customer"; name: string; phone: string; otpCode: string }) =>
+  .validator((d: { token: string; rationId: string; role: "distributor" | "customer"; name: string; phone: string; otpCode: string }) =>
     z.object({
       token: z.string(),
       rationId,
@@ -217,7 +244,7 @@ export const adminCreateId = createServerFn({ method: "POST" })
 
 // Admin sends an OTP to a phone number during registration (phone has no user yet).
 export const adminSendRegistrationOtp = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; phone: string }) =>
+  .validator((d: { token: string; phone: string }) =>
     z.object({ token: z.string(), phone: phoneSchema }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -238,7 +265,7 @@ export const adminSendRegistrationOtp = createServerFn({ method: "POST" })
 
 // ============ ADMIN: list ============
 export const adminList = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { user } = await requireSession(data.token);
     if (user.role !== "admin") throw new Error("Forbidden");
@@ -251,7 +278,7 @@ export const adminList = createServerFn({ method: "POST" })
 // ============ ADMIN: update complaint status ============
 const COMPLAINT_STATUSES = ["Open", "Under Review", "Resolved"] as const;
 export const adminUpdateComplaintStatus = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; complaintId: string; status: string }) =>
+  .validator((d: { token: string; complaintId: string; status: string }) =>
     z.object({
       token: z.string(),
       complaintId: z.string().uuid(),
@@ -267,7 +294,7 @@ export const adminUpdateComplaintStatus = createServerFn({ method: "POST" })
   });
 
 export const adminCloseComplaint = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; complaintId: string }) =>
+  .validator((d: { token: string; complaintId: string }) =>
     z.object({ token: z.string(), complaintId: z.string().uuid() }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -280,7 +307,7 @@ export const adminCloseComplaint = createServerFn({ method: "POST" })
 
 // ============ PUBLIC: track complaints by phone + name ============
 export const trackComplaints = createServerFn({ method: "POST" })
-  .inputValidator((d: { phone: string; name: string }) =>
+  .validator((d: { phone: string; name: string }) =>
     z.object({ phone: phoneSchema, name: z.string().trim().min(1) }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -297,7 +324,7 @@ export const trackComplaints = createServerFn({ method: "POST" })
 
 // ============ ADMIN: delete user (customer or distributor) ============
 export const adminDeleteUser = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; userId: string }) =>
+  .validator((d: { token: string; userId: string }) =>
     z.object({ token: z.string(), userId: z.string().uuid() }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -323,7 +350,7 @@ export const adminDeleteUser = createServerFn({ method: "POST" })
 
 // ============ FAMILY (admin-managed) ============
 export const adminAddFamily = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; customerRationId: string; name: string; dob: string; relation: string }) =>
+  .validator((d: { token: string; customerRationId: string; name: string; dob: string; relation: string }) =>
     z.object({
       token: z.string(),
       customerRationId: rationId,
@@ -347,7 +374,7 @@ export const adminAddFamily = createServerFn({ method: "POST" })
   });
 
 export const adminUpdateFamily = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; id: string; name: string; dob: string; relation: string }) =>
+  .validator((d: { token: string; id: string; name: string; dob: string; relation: string }) =>
     z.object({
       token: z.string(),
       id: z.string().uuid(),
@@ -370,7 +397,7 @@ export const adminUpdateFamily = createServerFn({ method: "POST" })
   });
 
 export const adminDeleteFamily = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; id: string }) =>
+  .validator((d: { token: string; id: string }) =>
     z.object({ token: z.string(), id: z.string().uuid() }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -382,7 +409,7 @@ export const adminDeleteFamily = createServerFn({ method: "POST" })
   });
 
 export const adminListFamily = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; customerRationId: string }) =>
+  .validator((d: { token: string; customerRationId: string }) =>
     z.object({ token: z.string(), customerRationId: rationId }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -395,7 +422,7 @@ export const adminListFamily = createServerFn({ method: "POST" })
   });
 
 export const listFamily = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { user } = await requireSession(data.token);
     if (user.role !== "customer") throw new Error("Forbidden");
@@ -405,7 +432,7 @@ export const listFamily = createServerFn({ method: "POST" })
 
 // ============ DISTRIBUTOR: lookup customer & record collection ============
 export const lookupCustomer = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; rationId: string }) =>
+  .validator((d: { token: string; rationId: string }) =>
     z.object({ token: z.string(), rationId }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -442,7 +469,7 @@ const collectPrefix = (rid: string) => `__collect:${rid}`;
 
 // ============ DISTRIBUTOR: send collection OTP to the customer's phone ============
 export const sendCollectionOtp = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; customerRationId: string }) =>
+  .validator((d: { token: string; customerRationId: string }) =>
     z.object({ token: z.string(), customerRationId: rationId }).parse(d)
   )
   .handler(async ({ data }) => {
@@ -479,7 +506,7 @@ const itemSchema = z.object({
 });
 
 export const recordCollection = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; customerRationId: string; otpCode: string; items: { name: string; quantity: number; unit: string }[] }) =>
+  .validator((d: { token: string; customerRationId: string; otpCode: string; items: { name: string; quantity: number; unit: string }[] }) =>
     z.object({
       token: z.string(),
       customerRationId: rationId,
@@ -539,7 +566,7 @@ export const recordCollection = createServerFn({ method: "POST" })
 
 // ============ TRANSACTIONS for current user ============
 export const myTransactions = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { user } = await requireSession(data.token);
     let query = supabaseAdmin.from("ration_collections").select("*, customer:users!ration_collections_customer_id_fkey(name, ration_id), distributor:users!ration_collections_distributor_id_fkey(name, ration_id)").order("date_received", { ascending: false });
@@ -552,7 +579,7 @@ export const myTransactions = createServerFn({ method: "POST" })
 
 // ============ COMPLAINTS ============
 export const checkComplaintEligibility = createServerFn({ method: "POST" })
-  .inputValidator((d: { phone: string }) => z.object({ phone: phoneSchema }).parse(d))
+  .validator((d: { phone: string }) => z.object({ phone: phoneSchema }).parse(d))
   .handler(async ({ data }) => {
     const phone = data.phone.trim();
     const { data: user } = await supabaseAdmin
@@ -565,7 +592,7 @@ export const checkComplaintEligibility = createServerFn({ method: "POST" })
   });
 
 export const submitComplaint = createServerFn({ method: "POST" })
-  .inputValidator((d: { name: string; phone: string; branch: string; reason: string }) =>
+  .validator((d: { name: string; phone: string; branch: string; reason: string }) =>
     z.object({
       name: z.string().trim().regex(NAME_RE, "Invalid name"),
       phone: phoneSchema,
@@ -593,7 +620,7 @@ const stockItemName = z.string().min(1).max(50);
 // Admin sets/refills stock for a distributor.
 // `mode: "set"` overwrites assigned_qty; `mode: "add"` increments it.
 export const adminSetStock = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string; distributorId: string; itemName: string; unit: string; quantity: number; mode: "set" | "add" }) =>
+  .validator((d: { token: string; distributorId: string; itemName: string; unit: string; quantity: number; mode: "set" | "add" }) =>
     z.object({
       token: z.string(),
       distributorId: z.string().uuid(),
@@ -641,7 +668,7 @@ export const adminSetStock = createServerFn({ method: "POST" })
 
 // Admin overview of all stocks across all distributors
 export const adminListStocks = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { user } = await requireSession(data.token);
     if (user.role !== "admin") throw new Error("Forbidden");
@@ -661,7 +688,7 @@ export const adminListStocks = createServerFn({ method: "POST" })
 
 // Distributor view of own current stock
 export const myStock = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { user } = await requireSession(data.token);
     if (user.role !== "distributor") throw new Error("Forbidden");
@@ -676,7 +703,7 @@ export const myStock = createServerFn({ method: "POST" })
 // Customer read-only view of the stock held by their distributor.
 // The distributor is derived from the customer's most recent collection.
 export const customerStock = createServerFn({ method: "POST" })
-  .inputValidator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
+  .validator((d: { token: string }) => z.object({ token: z.string() }).parse(d))
   .handler(async ({ data }) => {
     const { user } = await requireSession(data.token);
     if (user.role !== "customer") throw new Error("Forbidden");

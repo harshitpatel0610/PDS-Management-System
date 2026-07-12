@@ -1,5 +1,12 @@
 import twilio from "twilio";
 
+
+const isDevBypass =
+  process.env.NODE_ENV === "development" &&
+  process.env.DEV_BYPASS_OTP === "true";
+
+
+
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID!,
   process.env.TWILIO_AUTH_TOKEN!
@@ -9,6 +16,20 @@ export async function sendSms(
   to: string,
   body: string
 ): Promise<{ ok: boolean; debugCode?: string; error?: string }> {
+
+
+
+if (isDevBypass) {
+  console.log("⚡ DEV BYPASS:", body);
+
+  return {
+    ok: true,
+    debugCode: process.env.DEV_OTP,
+  };
+}
+
+
+
 
   const FROM = process.env.TWILIO_FROM_NUMBER;
 
